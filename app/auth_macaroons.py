@@ -36,7 +36,19 @@ def mint_macaroon(user: str, path_prefix: str, ttl_seconds: int) -> str:
 
     Return the serialized macaroon (string).
     """
-    raise NotImplementedError
+    expires_at = int(time.time()) + ttl_seconds
+
+    macaroon = Macaroon(
+        location=LOCATION,
+        identifier=IDENTIFIER,
+        key=ROOT_KEY
+    )
+
+    macaroon.add_first_party_caveat(f"{CAV_USER} = {user}")
+    macaroon.add_first_party_caveat(f"{CAV_PATH_PREFIX} = {path_prefix}")
+    macaroon.add_first_party_caveat(f"{CAV_EXPIRES_AT} = {expires_at}")
+
+    return macaroon.serialize()
 
 
 def verify_macaroon(token: str, *, user: str, path: str) -> None:
@@ -50,7 +62,12 @@ def verify_macaroon(token: str, *, user: str, path: str) -> None:
 
     Returns None if authorized.
     """
-    raise NotImplementedError
+    try:
+        m = Macaroon.deserialize(token)
+        verifier = _make_verifier(expected_user=user, requested_path=path)
+        verifier.verify(m, ROOT_KEY)
+    except Exception as e:
+        raise HTTPException(status_code=403, detail=f"Invalid or unauthorized macaroon: {e}")
 
 
 # ---------------------------
@@ -65,24 +82,30 @@ def _make_verifier(*, expected_user: str, requested_path: str) -> Verifier:
         try:
             k, val = _parse_caveat(cav)
         except ValueError:
-            return False
+            raise ValueError(f"Invalid caveat format: {cav}")
 
         if k == CAV_USER:
-            return val == expected_user
+            if val != expected_user:
+                raise ValueError("user mismatch")
+            return True
 
         if k == CAV_PATH_PREFIX:
             # Enforce prefix restriction on the requested path
-            return requested_path.startswith(val)
+            if not requested_path.startswith(val):
+                raise ValueError("path_prefix restriction failed")
+            return True
 
         if k == CAV_EXPIRES_AT:
             try:
                 exp = int(val)
             except ValueError:
-                return False
-            return int(time.time()) <= exp
+                raise ValueError("invalid expire format")
+            if int(time.time()) > exp:
+                raise ValueError("macaroon expired")
+            return True
 
         # Unknown caveat => fail closed
-        return False
+        raise ValueError(f"unknown caveat: {k}")
 
     v.satisfy_general(predicate)
     return v
